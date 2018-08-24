@@ -1,0 +1,8 @@
+;; -*- Hen -*-
+
+((synopsis "Compute the longest common subsequence of two sequences")
+ (license "GPL-3")
+ (category data)
+ (dependencies srfi-1 datatype yasos)
+ (author "Ivan Raikov")
+ )

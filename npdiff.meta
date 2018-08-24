@@ -1,0 +1,24 @@
+;; -*- Hen -*-
+
+((egg "npdiff.egg") ; This should never change
+
+ ; List here all the files that should be bundled as part of your egg.  
+
+ (files "npdiff.meta" "stack.scm" "npdiff.setup" "box.scm" "npdiff.scm")
+
+ ; Your egg's license:
+
+ (license "GPL-3")
+
+ ; Pick one from the list of categories (see below) for your egg and
+ ; enter it here.
+
+ (category data)
+
+ ; A list of eggs npdiff depends on.
+
+ (needs datatype)
+
+ (author "Ivan Raikov")
+
+ (synopsis "Compute the longest common subsequence of two sequences"))
