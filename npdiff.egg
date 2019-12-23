@@ -4,5 +4,7 @@
  (license "GPL-3")
  (category data)
  (dependencies srfi-1 datatype yasos)
+ (test-dependencies test srfi-1)
  (author "Ivan Raikov")
+ (components (extension npdiff))
  )

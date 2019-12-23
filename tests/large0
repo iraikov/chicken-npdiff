@@ -1,0 +1,280 @@
+
+        if (nexttok==ID) {
+                s1=key; s2=NextString;
+                while(*s1 == *s2++)
+                     if (*s1++ == '\0') {
+                         /* match found */
+                         Topchar = NextString; /*reset Topchar */
+                         nextlex();
+                         return(true);
+                     }
+        }
+        return(false);
+}
+
+
+
+
+
+struct hshentry * getnum()
+/* Function: Checks if nexttok is a number. If so,
+ * advances the input by calling nextlex and returns a pointer
+ * to the hashtable entry. Otherwise returns nil.
+ * Doesn't work if hshenter is false.
+ */
+{
+        register struct hshentry * num;
+        if (nexttok==NUM) {
+                num=nexthsh;
+                nextlex();
+                return num;
+        } else  return nil;
+}
+
+
+readstring()
+/* skip over characters until terminating single SDELIM        */
+/* if rewriteflag==true, copy every character read to frewrite.*/
+/* Does not advance nextlex at the end.                        */
+{       register c;
+	register FILE * fin,  * frew;
+	fin=finptr; frew=frewrite;
+        if (rewriteflag) {
+                /* copy string verbatim to frewrite */
+                while ((c=getc(fin)) != EOF) {
+			VOID putc(c,frew);
+                        if (c==SDELIM) {
+                                if ((c=getc(fin)) == EOF || putc(c,frew) !=
+SDELIM) {
+                                        /* end of string */
+                                        nextc=c;
+                                        return;
+                                }
+                        }
+                }
+        } else {
+                /* skip string */
+                while ((c=getc(fin)) != EOF) {
+                        if (c==SDELIM) {
+                                if ((c=getc(fin)) != SDELIM) {
+                                        /* end of string */
+                                        nextc=c;
+                                        return;
+                                }
+                        }
+                }
+        }
+        nextc = c;
+        error("Unterminated string");
+}
+
+
+printstring()
+/* Function: copy a string to stdout, until terminated with a single SDELIM.
+ * Does not advance nextlex at the end.
+ */
+{
+        register c;
+	register FILE * fin;
+	fin=finptr;
+	while ((c=getc(fin)) != EOF) {
+                if (c==SDELIM) {
+			if ((c=getc(fin)) != SDELIM) {
+                                /* end of string */
+                                nextc=c;
+                                return;
+                        }
+                }
+                VOID putchar(c);
+        }
+        nextc = c;
+        error("Unterminated string");
+}
+
+
+
+savestring(target,length)
+char * target; int length;
+/* copies a string terminated with SDELIM from file finptr to buffer target,
+ * but not more than length bytes. If the string is longer than length,
+ * the extra characters are skipped. The string may be empty, in which
+ * case a '\0' is placed into target.
+ * Double SDELIM is replaced with SDELIM.
+ * If rewriteflag==true, the string is also copied unchanged to frewrite.
+ * Returns the length of the saved string.
+ * Does not advance nextlex at the end.
+ */
+{
+        register c;
+	register FILE * fin, * frew;
+        register char * tp, * max;
+
+	fin=finptr; frew=frewrite;
+        tp=target; max= target+length; /*max is one too large*/
+        while ((c=GETC(fin,frew,rewriteflag))!=EOF) {
+		*tp++ =c;
+                if (c== SDELIM) {
+                        if ((c=GETC(fin,frew,rewriteflag))!=SDELIM) {
+                                /* end of string */
+                                *(tp-1)='\0';
+                                nextc=c;
+                                return;
+                        }
+                }
+                if (tp >= max) {
+                        /* overflow */
+                        error("string buffer overflow -- truncating
+string");
+                        target[length-1]='\0';
+                        /* skip rest of string */
+                        while ((c=GETC(fin,frew,rewriteflag))!=EOF) {
+                                if ((c==SDELIM) &&
+((c=GETC(fin,frew,rewriteflag))!=SDELIM)) {
+                                        /* end of string */
+                                        nextc=c;
+                                        return;
+                                }
+                        }
+                        nextc = c;
+                        error("Can't find %c to terminate string before end
+of file",SDELIM);
+                        return;
+                }
+        }
+        nextc = c;
+        error("Can't find %c to terminate string before end of
+file",SDELIM);
+}
+
+
+char  *checkid(id, delim)
+char    *id, delim;
+/*   Function:  check whether the string starting at id is an   */
+/*              identifier and return a pointer to the last char*/
+/*              of the identifer. White space, delim and '\0'   */
+/*              are legal delimeters. Aborts the program if not */
+/*              a legal identifier. Useful for checking commands*/
+{
+        register enum  tokens  d;
+        register char    *temp;
+        register char    c,tc;
+
+        temp = id;
+        if ( ctab[*id] == LETTER ) {
+            while( (d=ctab[c=(*++id)]) == LETTER || d==DIGIT || d==IDCHAR) ;
+            if ( c!=' ' && c!='\t' && c!='\n' && c!='\0' && c!=delim) {
+                /* append \0 to end of id before error message */
+                tc = c;
+                while( (c=(*++id))!=' ' && c!='\t' && c!='\n' && c!='\0' &&
+c!=delim) ;
+                *id = '\0';
+                faterror("Invalid character %c in identifier %s",tc,temp);
+                return nil ;
+            } else
+                return id;
+        } else {
+            /* append \0 to end of id before error message */
+            while( (c=(*++id))!=' ' && c!='\t' && c!='\n' && c!='\0' &&
+c!=delim) ;
+            *id = '\0';
+            faterror("Identifier %s does not start with letter",temp);
+            return nil;
+        }
+}
+
+writeerror()
+{
+	static looping;
+	if (looping)
+		exit(2);
+	looping = 1;
+	faterror("write error");
+}
+
+nlflush(iop)
+register FILE * iop;
+{
+	if (putc('\n',iop)==EOF || fflush(iop)==EOF)
+                writeerror();
+}
+
+
+/*VARARGS1*/
+serror(e,e1,e2,e3,e4,e5)
+char * e, * e1, * e2, * e3, * e4, * e5;
+/* non-fatal syntax error */
+{       nerror++;
+        VOID fprintf(stderr,"%s error, line %d: ", cmdid, line);
+        VOID fprintf(stderr,e, e1, e2, e3, e4, e5);
+        nlflush(stderr);
+}
+
+/*VARARGS1*/
+error(e,e1,e2,e3,e4,e5)
+char * e, * e1, * e2, * e3, * e4, * e5;
+/* non-fatal error */
+{       nerror++;
+        VOID fprintf(stderr,"%s error: ",cmdid);
+        VOID fprintf(stderr,e, e1, e2, e3, e4, e5);
+        nlflush(stderr);
+}
+
+/*VARARGS1*/
+fatserror(e,e1,e2,e3,e4,e5)
+char * e, * e1, * e2, * e3, * e4, * e5;
+/* fatal syntax error */
+{       nerror++;
+        VOID fprintf(stderr,"%s error, line %d: ", cmdid,line);
+        VOID fprintf(stderr,e, e1, e2, e3, e4, e5);
+        VOID fprintf(stderr,"\n%s aborted\n",cmdid);
+        VOID cleanup();
+        exit(2);
+}
+
+/*VARARGS1*/
+faterror(e,e1,e2,e3,e4,e5)
+char * e, * e1, * e2, * e3, * e4, * e5;
+/* fatal error, terminates program after cleanup */
+{       nerror++;
+        VOID fprintf(stderr,"%s error: ",cmdid);
+        VOID fprintf(stderr,e, e1, e2, e3, e4, e5);
+        VOID fprintf(stderr,"\n%s aborted\n",cmdid);
+        VOID cleanup();
+        exit(2);
+}
+
+/*VARARGS1*/
+warn(e,e1,e2,e3,e4,e5)
+char * e, * e1, * e2, * e3, * e4, * e5;
+/* prints a warning message */
+{       nwarn++;
+        VOID fprintf(stderr,"%s warning: ",cmdid);
+        VOID fprintf(stderr,e, e1, e2, e3, e4, e5);
+        nlflush(stderr);
+}
+
+
+/*VARARGS1*/
+diagnose(e,e1,e2,e3,e4,e5)
+char * e, * e1, * e2, * e3, * e4, * e5;
+/* prints a diagnostic message */
+{
+        if (!quietflag) {
+                VOID fprintf(stderr,e, e1, e2, e3, e4, e5);
+                nlflush(stderr);
+        }
+}
+
+
+
+fflsbuf(c, iop)
+unsigned c; register FILE * iop;
+/* Function: Flush iop.
+ * Same routine as _flsbuf in stdio, but aborts program on error.
+ */
+{       register result;
+        if ((result=_flsbuf(c,iop))==EOF)
+                writeerror();
+        return result;
+}
+

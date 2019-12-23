@@ -2,7 +2,7 @@
 ;;
 ;; Compute the longest common subsequence of two sequences 
 ;;
-;; Copyright 2007-2018 Ivan Raikov.
+;; Copyright 2007-2019 Ivan Raikov.
 ;;
 ;; This program is free software: you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License as
@@ -19,10 +19,10 @@
 
 (module npdiff
 
- (export diffop diffop? Insert Remove Change
+ (diffop diffop? Insert Remove Change
 	 npdiff make-hunks)
 		   
- (import scheme (chicken base) srfi-1 srfi-4 datatype
+ (import scheme (chicken base) (chicken string) srfi-1 srfi-4 datatype
          yasos yasos-collections)
 
 
@@ -180,7 +180,7 @@
 	 (compare delta offset fp p)
 	 (if swap 
 	     (values (make-hunks B A css context-len) B A)
-	     (values (make-hunks A B css context-len) A B))))))))
+	     (values (make-hunks A B css context-len) A B)))))))
 
 
 
@@ -232,7 +232,7 @@
 	 (if (or (> start len) (< end start)) (list)
 	     (let ((start (if (< start 0) 0 start))
 		   (end   (if (< len end) len end)))
-	       (slice seq start end))))
+	       (elt-slice seq start end))))
        
        (define (loop css hunks)
 	 (if (stack-empty? css) hunks
@@ -245,16 +245,16 @@
 		    (if (= 1 k)
 			(cond ((and (= 0 x) (= 0 y))   hunks)
 
-			      ((= 0 x) (cons (Insert x (cons 0 y) (slice B 0 y) 
+			      ((= 0 x) (cons (Insert x (cons 0 y) (elt-slice B 0 y) 
 					       (and context? (cons (list) (make-context B N y (+ y context-len)))))
 					       hunks))
 
-			      ((= 0 y) (cons (Remove (cons 0 x) (slice A 0 x)
+			      ((= 0 y) (cons (Remove (cons 0 x) (elt-slice A 0 x)
 						       (cons (list) (make-context A M x (+ x context-len))))
 					       hunks))
 
 			      (else (cons (Change (cons 0 x) (cons 0 y)
-						  (is-slice B 0 y) (slice A 0 x) 
+						  (elt-slice B 0 y) (elt-slice A 0 x) 
 						  (and context? (cons (list) (make-context B N y (+ y context-len))))
 						  (and context? (cons (list) (make-context A M x (+ x context-len)))))
 					  hunks)))
@@ -264,19 +264,19 @@
 			  (let-values (((w z) (values x y))
 				       ((x y) (psplit2 (stack-peek css))))
                             (let ((newhunk  (cond ((= y z)  
-						   (Remove (cons x w) (slice A x w)
+						   (Remove (cons x w) (elt-slice A x w)
 							   (and context? 
 								(cons (make-context A M (- x context-len) x)
 								      (make-context A M x (+ w context-len))))))
 						  
 						  ((= x w)  
-						   (Insert x (cons y z) (is-slice B y z)
+						   (Insert x (cons y z) (elt-slice B y z)
 							   (and context? 
 								(cons (make-context B N (- y context-len) y)
 								      (make-context B N z (+ z context-len))))))
 
 						  (else (Change (cons x w) (cons y z)
-								(is-slice B y z ) (slice A x w)
+								(elt-slice B y z ) (elt-slice A x w)
 								(and context? 
 								     (cons (make-context B N (- y context-len) y)
 									   (make-context B N z (+ z context-len))))
@@ -293,16 +293,16 @@
 		 (list))
 		
 		((zero? M) ;; sequence A is empty
-		 (list (Insert 0 (cons 0 N) (slice B 0 N) (and context? `(())))))
+		 (list (Insert 0 (cons 0 N) (elt-slice B 0 N) (and context? `(())))))
 
 		((zero? N) ;; sequence B is empty
-		 (list (Remove (cons 0 M) (slice A 0 M)   (and context? `(())))))
+		 (list (Remove (cons 0 M) (elt-slice A 0 M)   (and context? `(())))))
 
 		;; the two sequences are completely different
 		(else
 		 (list (Change (cons 1 M) (cons 1 N)
-			       (slice B 0 N)
-			       (slice A 0 M)
+			       (elt-slice B 0 N)
+			       (elt-slice A 0 M)
 			       (and context? (cons (make-context B N 0 N) (list)))
 			       (and context? (cons (make-context A M 0 M) (list))))))
 		)
@@ -317,18 +317,18 @@
 			 (loop css (list)))
 
 			((= z N)
-			 (loop css (list (Remove (cons w M) (slice A w M)
+			 (loop css (list (Remove (cons w M) (elt-slice A w M)
 						 (and context? (cons (make-context A M w (+ w context-len))
 								     (list)))))))
 
 			((= w M)
-			 (loop css (list (Insert w (cons z N) (slice B z N)
+			 (loop css (list (Insert w (cons z N) (elt-slice B z N)
 						 (and context? (cons (make-context B N (- z context-len) z)
 								     (list)))))))
 
 			(else (loop css (list (Change (cons w M) (cons z N)
-						      (slice B z N )
-						      (slice A w M)
+						      (elt-slice B z N )
+						      (elt-slice A w M)
 						      (and context? (cons (make-context B N (- z context-len) z)
 									  (list)))
 						      (and context? (cons (make-context A M (- w context-len) w)
@@ -336,8 +336,9 @@
 						      )))
 			      ))
 		  ))
-	     ))))))
-
+	     ))
+      ))
+    )
 
 
 )
