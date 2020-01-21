@@ -42,4 +42,58 @@
        )
    )
 
+
+(test-group "format empty input sequences"
+
+   (let ((empty (with-input-from-string "" read-lines))
+	 (abc (with-input-from-string "abc" read-lines)))
+     (let ((hunks1 (npdiff empty abc 3))
+	   (hunks2 (npdiff abc empty 3)))
+
+       (call-with-output-string
+		    (lambda (out) (format-hunks/context out hunks1
+                                                        "empty" "" "abc" "")))
+       
+       (test-group "diff empty -> abc"
+		   (test "normal format" 
+#<<EOF
+0a1
+> abc
+
+EOF
+                   (call-with-output-string
+		    (lambda (out) (format-hunks/normal out hunks1))))
+		   (test "ed format"
+#<<EOF
+0a
+abc
+.
+
+EOF
+                   (call-with-output-string
+		    (lambda (out) (format-hunks/ed out hunks1))))
+		   (test "rcs format"
+#<<EOF
+a0 1
+abc
+
+EOF
+                   (call-with-output-string
+		    (lambda (out) (format-hunks/rcs out hunks1))))
+		   (test "context format"
+#<<EOF
+*** empty 
+--- abc 
+***************
+*** 0 ****
+--- 1 ----
++ abc
+
+EOF
+                   (call-with-output-string
+		    (lambda (out) (format-hunks/context out hunks1
+				   "empty" "" "abc" ""))))
+		   ))
+     ))
+
 (test-exit)

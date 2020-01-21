@@ -3,7 +3,7 @@
 ((synopsis "Compute the longest common subsequence of two sequences")
  (license "GPL-3")
  (category data)
- (dependencies srfi-1 datatype yasos)
+ (dependencies srfi-1 datatype yasos dyn-vector)
  (test-dependencies test srfi-1)
  (author "Ivan Raikov")
  (components (extension npdiff))
