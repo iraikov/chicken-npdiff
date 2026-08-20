@@ -2,7 +2,7 @@
 ;;
 ;; Compute the longest common subsequence of two sequences 
 ;;
-;; Copyright 2007-2020 Ivan Raikov.
+;; Copyright 2007-2026 Ivan Raikov.
 ;;
 ;; This program is free software: you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License as
@@ -28,8 +28,8 @@
          format-hunks/context
          )
 		   
- (import scheme (chicken base) (chicken string) srfi-1 srfi-4 datatype
-         yasos yasos-collections dyn-vector)
+ (import scheme (chicken base) (chicken string) (chicken sort) srfi-1 srfi-4 datatype
+         yasos (except yasos-collections sort sort!) iset)
 
 
  
@@ -75,8 +75,9 @@
 	    (contextout (lambda (x) (or (not x) (context? x))))))
 
 
-(define-record-printer (diffop x out)
-  (cases diffop x 
+(set-record-printer! diffop
+ (lambda (x out)
+  (cases diffop x
 	 (Insert (target source seq context)
 		 (display "#(Insert" out)
 		 (display (conc " target=" target) out)
@@ -100,7 +101,7 @@
 		 (display (conc " seqout=" seqout) out)
 		 (display (conc " contextin=" contextin) out)
 		 (display (conc " contextout=" contextout) out)
-		 (display ")" out))))
+			 (display ")" out)))))
 
 ;;
 ;; Generate s-expressions for the patch egg:
@@ -300,7 +301,7 @@
 						   (Remove (cons x w) (elt-slice A x w)
 							   (and context? 
 								(cons (make-context A M (- x context-len) x)
-								      (make-context A M x (+ w context-len))))))
+								      (make-context A M w (+ w context-len))))))
 						  
 						  ((= x w)  
 						   (Insert x (cons y z) (elt-slice B y z)
@@ -333,11 +334,11 @@
 
 		;; the two sequences are completely different
 		(else
-		 (list (Change (cons 1 M) (cons 1 N)
+		 (list (Change (cons 0 M) (cons 0 N)
 			       (elt-slice B 0 N)
 			       (elt-slice A 0 M)
-			       (and context? (cons (make-context B N 0 N) (list)))
-			       (and context? (cons (make-context A M 0 M) (list))))))
+			       (and context? (cons (list) (list)))
+			       (and context? (cons (list) (list))))))
 		)
 
 	  (let-values (((endpair startpair)  (stack-ppeek css)))
@@ -351,7 +352,7 @@
 
 			((= z N)
 			 (loop css (list (Remove (cons w M) (elt-slice A w M)
-						 (and context? (cons (make-context A M w (+ w context-len))
+						 (and context? (cons (make-context A M (- w context-len) w)
 								     (list)))))))
 
 			((= w M)
@@ -534,6 +535,37 @@
 
 
 ;; Context format (patch)
+;;
+;; run: a maximal span of consecutive integers in the merged iset.
+;; A run is just an interval (lo . hi) that has no knowledge of
+;; which hunks produced it.
+;;
+;; block: the list of hunks assigned to one run. Runs and blocks are
+;; in 1:1 correspondence, but a run is a pair of integers while a
+;; block is a list of hunks.
+;;
+;; Algorithm (interval-union with padding):
+;;
+;;   1. DILATE     Pad each hunk's target range (A line coordinates) by its
+;;                 own before/after context size, producing one interval
+;;                 per hunk.
+;;   2. MERGE      Union the dilated intervals in an iset. iset does
+;;                 the actual merging; the maximal runs of the result
+;;                 are the final block boundaries.
+;;   3. PARTITION  Assign each hunk to the block (run) its dilated
+;;                 interval falls into.
+;;   4. PRINT      For each block, in order:
+;;        a. its A-range is read directly off its first/last hunk
+;;           (dilated-lo/dilated-hi);
+;;        b. its B-range is derived from a running insert/delete
+;;           delta, threaded block to block (the same quantity
+;;           format-hunks/normal already folds over);
+;;        c. the block is rendered by walking its hunks and the gaps
+;;           between them, printing shared context text once (a
+;;           context line is the same text on both sides) and each
+;;           hunk's own marked lines, separately for the "***" (A) and
+;;           "---" (B) sides.
+;;
 (define (format-hunks/context out hunks fname1 tstamp1 fname2 tstamp2)
 
   (define hunkhead  "***************\n")
@@ -548,418 +580,159 @@
         (if (= a b)
             (number->string a)
             (conc a "," b)))))
- 
-  ;; compute the line ranges of context hunks
-  (define (get-target-range h)
+
+  ;; target is always A-line coordinates, for all three variants
+  (define (hunk-target-range h)
     (cases diffop h
-	   (Insert (x source seq context)
-                   (let ((before (car context)) (after (cdr context)))
-                     (let ((na (+ (or (and after  (size after)) 0) (size seq)))
-                           (nb (or (and before (size before)) 0)))
-                       (cons (- x nb) (+ x na)))))
+	   (Insert (target source seq context) (cons target target))
+	   (Remove (target seq context) target)
+	   (Change (target source datain dataout contextin contextout) target)))
 
-	   (Remove (target seq context)
-                   (let ((x (car target)) (y (cdr target))
-                         (before (car context)) (after (cdr context)))
-                     (let ((na (or (and after  (size after)) 0))
-                           (nb (or (and before (size before)) 0)))
-                       (cons (- x nb) (+ y (max 0 (- na (- y x))))))))
-
-	   (Change (target source datain dataout contextin contextout)
-                   (let ((x (car target)) (y (cdr target))
-                         (before (car contextout)) (after (cdr contextout)))
-                     (let ((na (or (and after  (size after)) 0))
-                           (nb (or (and before (size before)) 0)))
-                       (cons (- x nb) (+ y na)))))
-
-	   ))
-
-  (define (get-source-range h)
+  ;; width of what this hunk contributes on the B side; 0 for Remove,
+  ;; which has no B-side representation at all
+  (define (hunk-source-width h)
     (cases diffop h
-	   (Insert (target source seq context)
-                   (let ((x (car source)) (y (cdr source))
-                         (before (car context)) (after (cdr context)))
-                     (let ((na (or (and after  (size after)) 0))
-                           (nb (or (and before (size before)) 0)))
-                       (cons (- x nb) (+ y na)))))
+	   (Insert (target source seq context) (- (cdr source) (car source)))
+	   (Remove (target seq context) 0)
+	   (Change (target source datain dataout contextin contextout) (- (cdr source) (car source)))))
 
+  ;; (before . after) context around the hunk. Context lines are common
+  ;; to both files, so this single pair is used for both the "***" and
+  ;; "---" blocks regardless of which sequence it happens to be sliced
+  ;; from.
+  (define (hunk-context h)
+    (cases diffop h
+	   (Insert (target source seq context) context)
+	   (Remove (target seq context) context)
+	   (Change (target source datain dataout contextin contextout) contextout)))
 
-	   (Remove (target seq context)
-                   (let ((x (car target)) (y (cdr target))
-                         (before (car context)) (after (cdr context)))
-                     (let ((na (or (and after  (size after)) 0))
-                           (nb (or (and before (size before)) 0)))
-                       (cons (- x nb) (+ x (max 0 (- na (- y x))))))))
+  ;; (marker . lines) shown on the "***" (A) side, or #f for Insert
+  ;; (which touches only B)
+  (define (hunk-target-marked h)
+    (cases diffop h
+	   (Insert (target source seq context) #f)
+	   (Remove (target seq context) (cons '- seq))
+	   (Change (target source datain dataout contextin contextout) (cons '! dataout))))
 
+  ;; (marker . lines) shown on the "---" (B) side, or #f for Remove
+  (define (hunk-source-marked h)
+    (cases diffop h
+	   (Insert (target source seq context) (cons '+ seq))
+	   (Remove (target seq context) #f)
+	   (Change (target source datain dataout contextin contextout) (cons '! datain))))
 
-	   (Change (target source datain dataout contextin contextout)
-                   (let ((x (car source)) (y (cdr source))
-                         (before (car contextin)) (after (cdr contextin)))
-                     (let ((na (or (and after  (size after)) 0))
-                           (nb (or (and before (size before)) 0)))
-                       (cons (- x nb) (+ y na)))))
+  ;; step 1 (DILATE): a hunk's target range, padded by its own (already
+  ;; boundary-clipped) before/after context sizes
+  (define (dilated-lo h) (- (car (hunk-target-range h)) (size (car (hunk-context h)))))
+  (define (dilated-hi h) (+ (cdr (hunk-target-range h)) (size (cdr (hunk-context h)))))
 
-	   ))
+  (define (print-lines marker coll out)
+    (do-elts (lambda (s)
+	       (display (conc (or marker " ") " ") out)
+	       (display s out)
+	       (display "\n" out))
+	     coll))
 
-  ;; Counts all lines in v that are not #f
-  (define (line-count v) (dynvector-fold (lambda (i state vv) (if vv (+ state 1) state)) 0 v))
+  ;; step 2 (MERGE) helper: iset only exposes element-level iteration,
+  ;; so maximal runs are recovered by scanning the sorted member list
+  ;; for consecutive spans
+  (define (iset->runs is)
+    (let loop ((members (sort (iset->list is) <)) (runs '()))
+      (if (null? members) (reverse runs)
+	  (let scan ((rest (cdr members)) (lo (car members)) (hi (+ 1 (car members))))
+	    (if (and (pair? rest) (= (car rest) hi))
+		(scan (cdr rest) lo (+ 1 hi))
+		(loop rest (cons (cons lo hi) runs)))))))
 
-  ;; converts a hunk to a vector of lines where each line can be
-  ;; prefixed by - + ! or nothing
-  (define (hunk->vector h #!key (target-vect #f)  (source-vect #f)
-                        (target-range (get-target-range h)) 
-                        (source-range (get-source-range h))
-                        (target-start #f) (source-start #f))
+  ;; steps 1-3 (DILATE, MERGE, PARTITION): each hunk contributes its
+  ;; dilated interval (at least 1 wide, so a hunk with empty context on
+  ;; both sides still registers a point to merge/print around) to an
+  ;; iset; iset-union performs the merge; the resulting runs are read
+  ;; back to partition the hunks into blocks.
+  (define (merge-hunks hunks)
+    (let ((dilated
+	   (fold (lambda (h is)
+		   (let* ((lo (dilated-lo h))
+			  (hi (max (dilated-hi h) (+ lo 1))))
+		     (iset-union is (make-iset lo (- hi 1)))))
+		 (make-iset)
+		 hunks)))
+      (let loop ((hunks hunks) (runs (iset->runs dilated)) (blocks '()))
+	(if (null? runs) (reverse blocks)
+	    (let-values (((this rest)
+			  (span (lambda (h) (< (dilated-lo h) (cdr (car runs)))) hunks)))
+	      (loop rest (cdr runs) (cons this blocks)))))))
 
-      (cases diffop h  
+  ;; step 4c (PRINT) helper: content of the gap between two hunks (or
+  ;; between a block boundary and its first/last hunk, when prev-h/
+  ;; next-h is #f). A gap can be wider than either neighbor's own
+  ;; context window alone, since two hunks only merge
+  ;; into one block when their windows together cover the gap between
+  ;; them, so this takes as much as it can from the left
+  ;; (prev-h's after-context) and the rest
+  ;; from the right (next-h's before-context).
+  (define (gap-content prev-h next-h width)
+    (let ((after  (and prev-h (cdr (hunk-context prev-h))))
+	  (before (and next-h (car (hunk-context next-h)))))
+      (cond ((not prev-h) (elt-slice before (max 0 (- (size before) width)) (size before)))
+	    ((not next-h)  (elt-slice after 0 (min width (size after))))
+	    (else
+	     (let ((n1 (min (size after) width)))
+	       (append (elt-slice after 0 n1)
+		       (elt-slice before (max 0 (- (size before) (- width n1))) (size before))))))))
 
-	   (Insert (target source data context)
-                   (let ((before (car context)) (after (cdr context)))
-                     (let ((invect  (or source-vect (make-dynvector (- (cdr source-range) (car source-range)) #f)))
-                           (outvect (or target-vect (make-dynvector (+ (size after) (size before)) #f)))
-                           (source-start    (or source-start 0))
-                           (target-start    (or target-start 0)))
+  ;; step 4c (PRINT): walks the gaps and hunks of one block, printing
+  ;; shared context text between them and each hunk's own marked
+  ;; content (target- or source-side, selected via get-marked)
+  (define (print-run-side block run-lo run-hi get-marked out)
+    (let loop ((hs block) (prev-end run-lo) (prev-h #f))
+      (if (null? hs)
+	  (print-lines #f (gap-content prev-h #f (- run-hi prev-end)) out)
+	  (let* ((h (car hs)) (tr (hunk-target-range h)) (lo (car tr)))
+	    (print-lines #f (gap-content prev-h h (- lo prev-end)) out)
+	    (let ((marked (get-marked h)))
+	      (if marked (print-lines (car marked) (cdr marked) out)))
+	    (loop (cdr hs) (cdr tr) h)))))
 
-                       (let ((n source-start))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (let ((v (dynvector-ref invect (+ n i))))
-                                (cond ((not v)
-                                       (dynvector-set! invect i (cons #f s)))
-                                      ((and (pair? v) (not (car v)))
-                                       (dynvector-set! invect i (cons #f s)))
-                                      ))
-                              ))
-                          before))
-                       (let ((n (+ source-start (size before))))
-                         (do-items
-                          (lambda (item) 
-                            (let ((i (car item)) (s (cadr item)))
-                              (dynvector-set! invect (+ n i) (cons '+ s))
-                              ))
-                          data))
-                       (let ((n (+ source-start (size before) (size data))))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (let ((v (dynvector-ref invect (+ n i))))
-                                (cond ((not v)
-                                       (dynvector-set! invect (+ n i) (cons #f s)))
-                                      ((and (pair? v) (not (car v)))
-                                       (dynvector-set! invect (+ n i) (cons #f s)))
-                                      ))
-                              ))
-                          after))
-                       (let ((n target-start))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (let ((v (dynvector-ref outvect (+ n i))))
-                                (cond ((not v)
-                                       (dynvector-set! outvect (+ n i) (cons #f s)))
-                                      ((and (pair? v) (not (car v)))
-                                       (dynvector-set! outvect (+ n i) (cons #f s)))
-                                      ))
-                              ))
-                          before))
-                       (let ((n (+ target-start (size before))))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (let ((v (dynvector-ref outvect (+ n i))))
-                                (cond ((not v)
-                                       (dynvector-set! outvect (+ n i) (cons #f s)))
-                                      ((and (pair? v) (not (car v)))
-                                       (dynvector-set! outvect (+ n i) (cons #f s)))
-                                      ))
-                              ))
-                          after))
+  ;; step 4 (PRINT): computes one block's A-range (4a) and B-range
+  ;; (4b), renders both sides (4c), and returns the running B-A delta
+  ;; for the next block's B-range (4b) to build on
+  (define (print-block block delta-before out)
+    (let* ((h1 (car block))
+	   (hk (car (reverse block)))
+	   (a-lo (dilated-lo h1))                          ; 4a
+	   (a-hi (dilated-hi hk))                           ; 4a
+	   (b-lo (+ a-lo delta-before))                     ; 4b
+	   (delta-after
+	    (fold (lambda (h d)
+		    (let ((tr (hunk-target-range h)))
+		      (+ d (- (hunk-source-width h) (- (cdr tr) (car tr))))))
+		  delta-before block))
+	   (b-hi (+ a-hi delta-after)))                     ; 4b
 
-                       (values invect outvect
-                               (cons (car source-range) (+ (car source-range) (line-count invect)))
-                               (cons (car target-range) (+ (car target-range) (line-count outvect)))
-                               )
-	      
-                       ))
-                   )
+      (display hunkhead out)
+      (display fromhead out) (display (pair->string (cons a-lo a-hi)) out) (display fromtail out)
+      ;; a side's body is only shown when the block actually marks a
+      ;; changed line on that side; a block made up entirely of
+      ;; Inserts (or entirely of Removes) leaves the other side's
+      ;; header with no body at all, matching diff -c
+      (if (any hunk-target-marked block)
+	  (print-run-side block a-lo a-hi hunk-target-marked out))
+      (display tohead out) (display (pair->string (cons b-lo b-hi)) out) (display totail out)
+      (if (any hunk-source-marked block)
+	  (print-run-side block a-lo a-hi hunk-source-marked out))
 
-	   (Remove (target data context)
-                   (let ((x (car target)) (y (cdr target))
-                         (before (car context)) (after (cdr context)))
-                     (let ((invect   (or source-vect (make-dynvector (+ (size after) (size before)) #f)))
-                           (outvect  (or target-vect (make-dynvector (- (cdr target-range) (car target-range)) #f)))
-                           (start    (or target-start 0)))
+      delta-after))
 
-                       (let ((n start))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (if (not (dynvector-ref outvect (+ n i)))
-                                  (dynvector-set! outvect (+ n i) (cons #f s)))
-                              ))
-                          before))
-                       
-                       (let ((n (+ start (size before))))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (dynvector-set! outvect i (cons '- s))
-                              ))
-                          data))
-                       
-                       (let ((n (- (+ start (+ (size data) (size before))) 1)))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (if (not (dynvector-ref outvect (+ n i)))
-                                  (dynvector-set! outvect (+ n i) (cons #f s)))))
-                          after))
-
-                       (let ((nb (size before)))
-                           (if before
-                               (let ((n (if (>= start nb) (- start nb) start)))
-                                 (do-items
-                                  (lambda (item)
-                                    (let ((i (car item)) (s (cadr item)))
-                                      (let ((v (dynvector-ref outvect (+ i n))))
-                                        (if (not (dynvector-ref invect (+ i n)))
-                                            (if (case (car v) ((+ ! #f) #t) (else #f))
-                                                (dynvector-set! invect (+ i n) (cons #f s)))
-                                            ))
-                                      ))
-                                  before))
-                               ))
-
-                       (let ((nd (- y x))
-                             (n  (+ start (size after))))
-                         (let loop ((i (+ 1 start)) (j (+ 1 (+ nd start))))
-                           (let ((v (dynvector-ref outvect j)))
-                             (if (and (not (dynvector-ref invect i)) v
-                                      (case (car v) ((+ ! #f) #t) (else #f)))
-                                 (dynvector-set! invect i (cons #f (cdr v))))
-                             (if (<= i n) (loop (+ 1 i) (+ 1 j) ))
-                             )))
-                       
-                       (values invect outvect
-                               (cons (car source-range) (+ (car source-range) (line-count invect)))
-                               (cons (car target-range) (+ (car target-range) (line-count outvect))))
-                       ))
-                   )
-	   
-           (Change (target source datain dataout contextin contextout)
-                   (let ((x (car target)) (y (cdr target))
-                         (w (car source)) (z (cdr source))
-                         (beforein (car contextin)) (afterin (cdr contextin))
-                         (beforeout (car contextout)) (afterout (cdr contextout)))
-
-                     (let ((outvect  (or target-vect (make-dynvector (- (cdr target-range) (car target-range)) #f)))
-                           (invect   (or source-vect (make-dynvector (- (cdr source-range) (car source-range)) #f)))
-                           (outstart (or target-start 0))
-                           (instart  (or source-start 0)))
-
-                       (let ((n outstart))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (if (not (dynvector-ref outvect i))
-                                  (dynvector-set! outvect (+ n i) (cons #f s)))))
-                          beforeout))
-                       (let ((n (+ outstart (size beforeout))))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (dynvector-set! outvect (+ n i) (cons '! s))))
-                          dataout))
-                       (let ((n (+ outstart (+ (size dataout) (size beforeout)))))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (if (not (dynvector-ref outvect i))
-                                  (dynvector-set! outvect (+ n i) (cons #f s)))))
-                          afterout))
-                       (let ((n instart))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (if (not (dynvector-ref invect i))
-                                  (dynvector-set! invect (+ n i) (cons #f s)))))
-                          beforein))
-                       (let ((n (+ instart (size beforein))))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (dynvector-set! invect (+ n i) (cons '! s)) ))
-                          datain))
-                       (let ((n (+ instart (size datain) (size beforein))))
-                         (do-items
-                          (lambda (item)
-                            (let ((i (car item)) (s (cadr item)))
-                              (if (not (dynvector-ref invect i))
-                                  (dynvector-set! invect i (cons #f s)))))
-                          afterin))
-
-                       (values invect outvect source-range target-range)))
-                   )
-	   ))
-
-  ;; checks if hunk ranges overlap or are adjacent
-  (define (adjacent? range1 range2)
-    (and (and range1 range2)
-	 (>= 0 (- (car range2) (cdr range1)))))
-
-  ;; incorporates hunk h into the given source/target vectors
-  (define (merge h target-vect source-vect target-range source-range)
-
-    (let ((h-target-range (get-target-range h))
-	  (h-source-range (get-source-range h)))
-
-      (hunk->vector h target-vect: target-vect source-vect: source-vect 
-
-		    ;; merge the ranges
-		    target-range:
-                    (let ((target-range
-			   (cond ((and target-range h-target-range) 
-				  (cons (min (car target-range) (car h-target-range))
-					(max (cdr target-range) (cdr h-target-range))))
-				 (target-range target-range)
-				 (h-target-range h-target-range)
-				 (else (error "context diff merge: invalid target range")))))
-		      target-range)
-
-                    source-range:
-		    (let ((source-range
-			   (cond ((and source-range h-source-range)
-				  (cons (min (car source-range) (car h-source-range))
-					(max (cdr source-range) (cdr h-source-range))))
-				 (source-range source-range)
-				 (h-source-range h-source-range)
-				 (else (error "context diff merge: invalid source range")))))
-		      source-range)
-
-		    ;; determine start index
-		    target-start:
-                    (and h-target-range target-range
-			 (let ((hx  (car h-target-range))
-			       (x   (car target-range)))
-			   (and (> hx x) (- hx x))))
-
-                    source-start:
-		    (and h-source-range source-range 
-			 (let ((hx  (car h-source-range))
-			       (x   (car source-range)))
-			   (and (> hx x) (- hx x))))
-                    ))
-    )
-  
-  (define (format source-vect target-vect source-range target-range out)
-
-    (let ((target-vect-change?  
-	   (and target-vect (dynvector-any (lambda (x) (and x (car x))) target-vect)))
-	  (source-vect-change?  
-	   (and source-vect (dynvector-any (lambda (x) (and x (car x))) source-vect))))
-
-      (cond ((and source-vect-change? target-vect-change?)
-	     ;; change hunk
-	     (display hunkhead out)
-	     (display fromhead out)
-	     (display (pair->string target-range) out)
-	     (display fromtail out)
-	     (dynvector-for-each (lambda (i l) 
-				   (if l
-				       (let ((p (car l)))
-					 (display (conc (or p " ") " ") out)
-					 (display (cdr l) out)
-					 (display "\n" out))))
-				 target-vect)
-	     (display tohead out)
-	     (display (pair->string source-range) out)
-	     (display totail out)
-	     (dynvector-for-each (lambda (i l) 
-				   (if l 
-				       (let ((p (car l)))
-					 (display (conc (or p " ") " ") out)
-					 (display (cdr l) out)
-					 (display "\n" out))
-				       ))
-				 source-vect))
-	    
-	    (target-vect-change?
-	     ;; remove hunk
-	     (display hunkhead out)
-	     (display fromhead out)
-	     (display (pair->string target-range) out)
-	     (display fromtail out)
-	     (dynvector-for-each (lambda (i l) 
-				   (if l
-				       (let ((p (car l)))
-					 (display (conc (or p " ") " ") out)
-					 (display (cdr l) out)
-					 (display "\n" out))
-				       ))
-				 target-vect)
-	     (display tohead out)
-	     (display (pair->string source-range) out)
-	     (display totail out))
-
-	    (source-vect-change?
-	     ;; insert hunk
-	     (display hunkhead out)
-	     (display fromhead out)
-	     (display (pair->string target-range) out)
-	     (display fromtail out)
-	     (display tohead out)
-	     (display (pair->string source-range) out)
-	     (display totail out)
-	     (dynvector-for-each (lambda (i l) 
-				   (let ((p (car l)))
-				     (display (conc (or p " ") " ") out)
-				     (display (cdr l) out)
-				     (display "\n" out)))
-				 source-vect))
-	    
-            ))
-    )
-
+  ;; driver: file headers, then steps 1-3 (merge-hunks) followed by
+  ;; step 4 (print-block) for each resulting block in turn, threading
+  ;; the running B-A delta (4b) from one block to the next
   (begin
-    
-   (for-each (lambda (x) (display x out)) (list fromhead fname1 " " tstamp1 "\n"))
-   (for-each (lambda (x) (display x out)) (list tohead fname2 " " tstamp2 "\n"))
-  
-   (if (not (null? hunks))
-       (let-values (((source-vect target-vect source-range target-range)
-                     (hunk->vector (car hunks))))
-         
-         (let loop ((hunks         (cdr hunks))
-                    (source-vect   source-vect)
-                    (target-vect   target-vect)
-                    (source-range  source-range)
-                    (target-range  target-range))
-           
-           (if (null? hunks)
-               
-               (format source-vect target-vect source-range target-range out)
-               
-               (let* ((h (car hunks))
-                      (h-target-range (get-target-range h)))
-                 
-                 (if (adjacent? target-range h-target-range)
-                     
-                     ;; merge contiguous hunks and recurse
-                     (let-values (((source-vect1 target-vect1 source-range1 target-range1)
-                                   (merge h target-vect source-vect target-range source-range)))
-                       (loop (cdr hunks)
-                             source-vect1 target-vect1
-                             source-range1 target-range1))
-                     
-                     ;; print current hunk and recurse
-                     (let-values (((source-vect1 target-vect1 source-range1 target-range1)
-                                   (hunk->vector h)))
-                       (format source-vect target-vect source-range target-range out)
-                       (loop (cdr hunks) source-vect1 target-vect1 source-range1 target-range1)))
-                 ))
-           ))
-       ))
+    (for-each (lambda (x) (display x out)) (list fromhead fname1 " " tstamp1 "\n"))
+    (for-each (lambda (x) (display x out)) (list tohead fname2 " " tstamp2 "\n"))
+    (fold (lambda (block delta) (print-block block delta out))
+	  0
+	  (merge-hunks hunks)))
   )
 
 )
