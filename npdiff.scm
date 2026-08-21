@@ -22,6 +22,7 @@
  (diffop diffop? Insert Remove Change
 	 npdiff make-hunks
          diffop->sexp
+         hunks->sexp
          format-hunks/normal
          format-hunks/ed
          format-hunks/rcs
@@ -115,7 +116,7 @@
            
 	   (Insert (target source seq context)
                    (let ((l (car source)) (r (cdr source)))
-                     `(a ,target ,target ,l ,r ,(list) ,seq)))
+                     `(a ,target ,target ,(+ 1 l) ,r ,(list) ,seq)))
 	   
 	   (Remove (target seq context)
                    (let ((l (car target)) (r (cdr target)))
@@ -126,6 +127,34 @@
                          (l1 (car target)) (r1 (cdr target)))
                      `(c ,(+ 1 l1) ,r1 ,(+ 1 l) ,r ,seqout ,seqin)))
 	   ))
+
+;; Like diffop->sexp, but converts a whole hunk list in one pass so
+;; that Remove entries can carry a real B-line position instead of #f.
+;; A Remove hunk has no B-side data of its own, but reverse-patch
+;; (from the patch egg) needs a B-position in order to turn the removal
+;; into a well-formed insertion when reversing, so this threads
+;; the running B-A delta across the hunks (the same quantity
+;; format-hunks/normal folds over) to compute it.
+;; Insert and Change already carry real B-coordinates in their own
+;; `source` field, so their sexps are unchanged from diffop->sexp.
+(define (hunks->sexp hunks)
+  (let loop ((hunks hunks) (delta 0) (acc (list)))
+    (if (null? hunks) (reverse acc)
+        (let ((h (car hunks)))
+          (cases diffop h
+                 (Remove (target seq context)
+                         (let* ((l (car target)) (r (cdr target))
+                                (b (+ l delta)))
+                           (loop (cdr hunks) (- delta (- r l))
+                                 (cons `(d ,(+ 1 l) ,r ,b ,b ,seq ,(list)) acc))))
+                 (Insert (target source seq context)
+                         (loop (cdr hunks) (+ delta (- (cdr source) (car source)))
+                               (cons (diffop->sexp h) acc)))
+                 (Change (target source seqin seqout contextin contextout)
+                         (loop (cdr hunks)
+                               (+ delta (- (- (cdr source) (car source))
+                                           (- (cdr target) (car target))))
+                               (cons (diffop->sexp h) acc))))))))
 
 
 ;;

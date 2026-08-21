@@ -20,7 +20,7 @@
   (test "identical sequences produce no hunks" '() (npdiff '("a" "b" "c") '("a" "b" "c") 3))
 
   (test "empty A, non-empty B is a single Insert"
-        '((a 0 0 0 2 () ("a" "b")))
+        '((a 0 0 1 2 () ("a" "b")))
         (map diffop->sexp (npdiff '() '("a" "b") 3)))
 
   (test "non-empty A, empty B is a single Remove"
@@ -155,7 +155,7 @@
 ;; large0 -> large1 is a real-world-sized C source diff. npdiff's O(NP)
 ;; algorithm can pick a different (but equally valid) alignment than
 ;; GNU diff when several common subsequences of the same length exist,
-;; so this is a structural smoke test rather than a byte-for-byte
+;; so this is a basic functionality test rather than a byte-for-byte
 ;; comparison against an external diff tool.
 (test-group "large0 -> large1 (structural smoke test)"
   (let ((large0 (read-file-lines "tests/large0"))
