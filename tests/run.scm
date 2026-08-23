@@ -127,8 +127,8 @@
 ;; text1 -> text2 exercises an Insert, a Change and a Remove that all
 ;; get merged into a single context hunk.
 (test-group "text1 -> text2 (multi-hunk merge)"
-  (let ((text1 (read-file-lines "tests/text1"))
-        (text2 (read-file-lines "tests/text2")))
+  (let ((text1 (read-file-lines "text1"))
+        (text2 (read-file-lines "text2")))
 
     (test "normal format"
           "0a1\n> w\n3,4c4,6\n< c\n< d\n---\n> x\n> y\n> z\n6,7d7\n< f\n< g\n"
@@ -141,8 +141,8 @@
 ;; pointers1 -> pointers2 exercises a Remove/Change/Remove chain where
 ;; the removed line leaves a genuine gap in the pseudo-source table.
 (test-group "pointers1 -> pointers2 (multi-hunk merge with removed-line gap)"
-  (let ((pointers1 (read-file-lines "tests/pointers1"))
-        (pointers2 (read-file-lines "tests/pointers2")))
+  (let ((pointers1 (read-file-lines "pointers1"))
+        (pointers2 (read-file-lines "pointers2")))
 
     (test "normal format"
           "7d6\n< <li><a href=\"100share/filer/base/filer.html\">Filer (without login)</a></li>\n9c8\n< <li><a href=\"100share/waitlesql/base/waitlesql_query.html\">WaitleSQL</a></li>\n---\n> <li><a href=\"100share/filer/base/filer.html\">Filer (without login)</a></li>\n14d12\n< \n"
@@ -157,9 +157,9 @@
 ;; GNU diff when several common subsequences of the same length exist,
 ;; so this is a basic functionality test rather than a byte-for-byte
 ;; comparison against an external diff tool.
-(test-group "large0 -> large1 (structural smoke test)"
-  (let ((large0 (read-file-lines "tests/large0"))
-        (large1 (read-file-lines "tests/large1")))
+(test-group "large0 -> large1 (basic functionality test)"
+  (let ((large0 (read-file-lines "large0"))
+        (large1 (read-file-lines "large1")))
 
     (test-assert "produces at least one hunk"
                  (pair? (npdiff large0 large1 3)))
